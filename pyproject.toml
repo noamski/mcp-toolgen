@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mcp-toolgen"
-version = "0.1.0"                     # bump with SemVer
+version = "0.1.1"                     # bump with SemVer
 description = "Generate OpenAI / Claude tool specs from GraphQL or gRPC."
 authors = [{ name = "Your-Name", email = "you@company.com" }]
 license = { file = "LICENSE" }
