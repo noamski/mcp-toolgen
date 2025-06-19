@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling>=1.18"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mcp-toolgen"
+version = "0.1.0"                     # bump with SemVer
+description = "Generate OpenAI / Claude tool specs from GraphQL or gRPC."
+authors = [{ name = "Your-Name", email = "you@company.com" }]
+license = { file = "LICENSE" }
+readme = "README.md"
+requires-python = ">=3.8"
+
+dependencies = [
+  "requests>=2.31",
+  "graphql-core>=3.2",
+  "protobuf>=4.25 ; extra == 'grpc'"   # optional extra
+]
+
+[project.optional-dependencies]
+grpc = ["protobuf>=4.25"]
+
+[project.scripts]           # CLI entry point
+mcp_toolgen = "mcp_toolgen.mcp_toolgen:_cli"
+
+[tool.hatch.build.targets.sdist]
+include = ["/mcp_toolgen", "/README.md", "/LICENSE"]
