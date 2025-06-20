@@ -25,7 +25,7 @@ jobs:
       - run: pytest
 
   publish:
-    if: true
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: test
     environment: ci
     runs-on: ubuntu-latest
