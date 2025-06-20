@@ -25,7 +25,7 @@ jobs:
       - run: pytest
 
   publish:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: true
     needs: test
     environment: ci
     runs-on: ubuntu-latest
@@ -38,8 +38,5 @@ jobs:
 
       - run: pip install hatch twine
       - run: hatch build
-      - run: twine upload \
-          --repository-url https://test.pypi.org/legacy/ \
-          dist/* -u __token__ -p ${{ secrets.TEST_PYPI_TOKEN }}
-      - run: twine upload \
-          dist/* -u __token__ -p ${{ secrets.PYPI_TOKEN }}
+      - run: twine upload --repository-url https://test.pypi.org/legacy/ dist/* -u __token__ -p ${{ secrets.TEST_PYPI_TOKEN }}
+      - run: twine upload dist/* -u __token__ -p ${{ secrets.PYPI_TOKEN }}
