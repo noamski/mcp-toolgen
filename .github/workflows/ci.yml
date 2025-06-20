@@ -21,6 +21,7 @@ jobs:
       - run: pip install --upgrade hatch
       - run: hatch build
       - run: pip install dist/*.whl
+      - run: pip install -e ".[dev]"
       - run: pytest
 
   publish:

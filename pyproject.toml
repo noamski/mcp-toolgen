@@ -19,6 +19,7 @@ dependencies = [
 
 [project.optional-dependencies]
 grpc = ["protobuf>=4.25"]
+dev = ["pytest>=7.0"]
 
 [project.scripts]           # CLI entry point
 mcp_toolgen = "mcp_toolgen.mcp_toolgen:_cli"
