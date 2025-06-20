@@ -2,30 +2,19 @@
 ================
 Tiny library **and** CLI to auto‑generate AI tool / function specs from:
 
-* **GraphQL** – given either an introspection JSON *file* **or** a live
-  endpoint URL (with optional HTTP headers such as `Authorization`).
-* **gRPC** – given a compiled **descriptor set** (`*.desc`).
+* **GraphQL** – from an introspection *file* **or** live endpoint (with any headers).
+* **gRPC** – from a compiled descriptor set (`*.desc`).
 
-It outputs a list of functions compatible with **OpenAI** (`functions=`)
-*or* **Anthropic Claude** (`tools=`) formats.
+Outputs are ready for **OpenAI** (`functions=`) or **Claude** (`tools=`).
 
-Quick demo – GraphQL endpoint with Bearer token::
+```bash
+# Cookie‑auth example (GraphQL)
+$ mcp_toolgen --url https://app.local/graphql \
+              --header "Cookie: sessionid=abc123; csrftoken=xyz" \
+              --format openai > tools.json
+```
 
-    $ mcp_toolgen --url https://api.acme.com/graphql \
-           --header "Authorization: Bearer $TOKEN" \
-           --only-mutations --format openai > tools.json
-
-Python use::
-
-    import mcp_toolgen as tg, os, json
-    tools = tg.generate_tools_from_graphql(
-        url="https://api.acme.com/graphql",
-        headers={"Authorization": f"Bearer {os.environ['TOKEN']}"},
-        only_mutations=True,
-    )
-    openai.ChatCompletion.create(model="gpt-4o", messages=msgs, functions=tools)
-
-Dependencies:  `requests`  `graphql-core`  `protobuf`.
+Dependencies: `requests`, `graphql-core`, optional `protobuf`.
 """
 from __future__ import annotations
 
@@ -34,7 +23,7 @@ import json
 import pathlib
 import re
 import sys
-from typing import Any, Dict, List, MutableMapping, Optional, Sequence, Union, cast
+from typing import Any, Dict, List, MutableMapping, Optional, Sequence, Set, Union, cast
 
 import requests  # HTTP fetch for live GraphQL introspection
 
@@ -45,17 +34,13 @@ except ImportError:  # pragma: no cover
     descriptor_pb2 = None  # type: ignore
     FDP = None  # type: ignore
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
 __all__ = [
     "generate_tools_from_graphql",
     "generate_tools_from_proto",
 ]
 
 # ---------------------------------------------------------------------------
-# Helpers – GraphQL
+# GraphQL helpers
 # ---------------------------------------------------------------------------
 INTROSPECTION_QUERY = """
 query IntrospectionQuery {
@@ -67,26 +52,15 @@ query IntrospectionQuery {
       fields(includeDeprecated: true) {
         name
         description
-        args {
-          name
-          description
-          type { ...TypeRef }
-        }
+        args { name description type { ...TypeRef } }
       }
-      inputFields {
-        name
-        description
-        type { ...TypeRef }
-      }
+      inputFields { name description type { ...TypeRef } }
       enumValues(includeDeprecated: true) { name description }
     }
   }
 }
-
 fragment TypeRef on __Type {
-  kind
-  name
-  ofType { kind name ofType { kind name ofType { kind name } } }
+  kind name ofType { kind name ofType { kind name ofType { kind name } } }
 }
 """
 
@@ -98,6 +72,8 @@ _SCALAR_MAP = {
     "ID": {"type": "string"},
 }
 
+
+# ---------------- HTTP / file loader ----------------
 
 def _fetch_introspection(url: str, headers: Optional[MutableMapping[str, str]] = None) -> Dict[str, Any]:
     resp = requests.post(url, json={"query": INTROSPECTION_QUERY}, headers=headers or {})
@@ -122,33 +98,44 @@ def _gql_type_index(schema: Dict[str, Any]) -> Dict[str, Any]:
     return {t["name"]: t for t in schema["data"]["__schema"]["types"]}
 
 
+# ---------------- Schema conversion ----------------
+
 def _is_nonnull(t: Dict[str, Any]) -> bool:
     return t.get("kind") == "NON_NULL"
 
 
-def _to_schema(t: Dict[str, Any], idx: Dict[str, Any]) -> Dict[str, Any]:
+def _to_schema(t: Dict[str, Any], idx: Dict[str, Any], seen: Optional[Set[str]] = None) -> Dict[str, Any]:
+    """Convert GraphQL type ref -> JSON‑schema.  Detects self‑cycles."""
+    if seen is None:
+        seen = set()
     kind = t.get("kind")
     if kind == "NON_NULL":
-        return _to_schema(t["ofType"], idx)
+        return _to_schema(t["ofType"], idx, seen)
     if kind == "LIST":
-        return {"type": "array", "items": _to_schema(t["ofType"], idx)}
+        return {"type": "array", "items": _to_schema(t["ofType"], idx, seen)}
     if kind == "SCALAR":
         return dict(_SCALAR_MAP.get(t["name"], {"type": "string"}))
     if kind == "ENUM":
         vals = [v["name"] for v in idx[t["name"]]["enumValues"]]
         return {"type": "string", "enum": vals}
     if kind == "INPUT_OBJECT":
+        name = t["name"]
+        if name in seen:  # break recursion – represent as generic object
+            return {"type": "object"}
+        seen.add(name)
         props, req = {}, []
-        for f in idx[t["name"]]["inputFields"]:
-            props[f["name"]] = _to_schema(f["type"], idx)
+        for f in idx[name]["inputFields"]:
+            props[f["name"]] = _to_schema(f["type"], idx, seen)
             if desc := f.get("description"):
                 props[f["name"]]["description"] = desc
             if _is_nonnull(f["type"]):
                 req.append(f["name"])
-        obj: Dict[str, Any] = {"type": "object", "properties": props}
+        seen.remove(name)  # allow reuse else‑where
+        out: Dict[str, Any] = {"type": "object", "properties": props}
         if req:
-            obj["required"] = req
-        return obj
+            out["required"] = req
+        return out
+    # fallback
     return {"type": "string"}
 
 
@@ -178,16 +165,8 @@ def generate_tools_from_graphql(
     only_mutations: bool = False,
     fmt: str = "openai",
 ) -> List[Dict[str, Any]]:
-    """Return tool specs from GraphQL (file *or* live endpoint).
-
-    `source` can be:
-      * path to introspection JSON file
-      * full URL of GraphQL endpoint (http/https) – will fetch introspection
-      * already-parsed dict
-    """
     if fmt not in ("openai", "claude"):
         raise ValueError("fmt must be 'openai' or 'claude'")
-
     schema = _load_introspection(source, headers)
     idx = _gql_type_index(schema)
 
@@ -201,7 +180,7 @@ def generate_tools_from_graphql(
     return fns
 
 # ---------------------------------------------------------------------------
-# Proto helpers
+# gRPC helpers
 # ---------------------------------------------------------------------------
 
 def _proto_scalar(field):  # type: ignore[no-any-unbound]
@@ -221,15 +200,14 @@ def _proto_scalar(field):  # type: ignore[no-any-unbound]
     return mapping.get(field.type, {"type": "string"})
 
 
-def _msg_schema(msg, fd_index):  # type: ignore[no-any-unbound]
+def _msg_schema(msg, index):  # type: ignore[no-any-unbound]
     props, req = {}, []
     for f in msg.field:
         name = f.json_name or f.name
         if f.type == FDP.TYPE_MESSAGE:
-            schema = _msg_schema(fd_index[f.type_name.lstrip(".")], fd_index)
+            schema = _msg_schema(index[f.type_name.lstrip(".")], index)
         elif f.type == FDP.TYPE_ENUM:
-            vals = [v.name for v in fd_index[f.type_name.lstrip(".")].value]
-            schema = {"type": "string", "enum": vals}
+            schema = {"type": "string", "enum": [v.name for v in index[f.type_name.lstrip(".")].value]}
         else:
             schema = _proto_scalar(f)
         if f.label == FDP.LABEL_REPEATED:
@@ -237,14 +215,14 @@ def _msg_schema(msg, fd_index):  # type: ignore[no-any-unbound]
         props[name] = schema
         if f.label == FDP.LABEL_REQUIRED:
             req.append(name)
-    obj: Dict[str, Any] = {"type": "object", "properties": props}
+    out: Dict[str, Any] = {"type": "object", "properties": props}
     if req:
-        obj["required"] = req
-    return obj
+        out["required"] = req
+    return out
 
 
-def _rpc_fn_name(rpc: str) -> str:
-    return re.sub(r"(?<!^)(?=[A-Z])", "_", rpc).lower()
+def _rpc_fn_name(rpc_name: str) -> str:
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", rpc_name).lower()
 
 
 def generate_tools_from_proto(
@@ -262,12 +240,12 @@ def generate_tools_from_proto(
     with open(descriptor_file, "rb") as fh:
         desc_set.ParseFromString(fh.read())
 
-    fd_index = {}
+    index = {}
     for fd in desc_set.file:
         for m in fd.message_type:
-            fd_index[f".{fd.package}.{m.name}"] = m
+            index[f".{fd.package}.{m.name}"] = m
         for e in fd.enum_type:
-            fd_index[f".{fd.package}.{e.name}"] = e
+            index[f".{fd.package}.{e.name}"] = e
 
     key = "parameters" if fmt == "openai" else "input_schema"
     out: List[Dict[str, Any]] = []
@@ -276,12 +254,11 @@ def generate_tools_from_proto(
             if services and svc.name not in services:
                 continue
             for rpc in svc.method:
-                fn_schema = _msg_schema(fd_index[rpc.input_type], fd_index)
                 out.append(
                     {
                         "name": _rpc_fn_name(rpc.name),
-                        "description": (rpc.leading_comments.strip() if rpc.leading_comments else f"Calls {rpc.name}"),
-                        key: fn_schema,
+                        "description": rpc.leading_comments.strip() if rpc.leading_comments else f"Calls {rpc.name}",
+                        key: _msg_schema(index[rpc.input_type], index),
                     }
                 )
     return out
@@ -290,32 +267,37 @@ def generate_tools_from_proto(
 # CLI
 # ---------------------------------------------------------------------------
 
-def _parse_headers(header_list: List[str]) -> Dict[str, str]:
-    headers: Dict[str, str] = {}
-    for h in header_list:
+def _parse_headers(pairs: List[str]) -> Dict[str, str]:
+    hdrs = {}
+    for h in pairs:
         if ":" not in h:
-            raise argparse.ArgumentTypeError("Header must be in 'Key: Value' format")
+            raise argparse.ArgumentTypeError("Header must be 'Key: Value'")
         k, v = h.split(":", 1)
-        headers[k.strip()] = v.strip()
-    return headers
+        hdrs[k.strip()] = v.strip()
+    return hdrs
 
 
 def _cli(argv: Optional[Sequence[str]] = None):
-    ap = argparse.ArgumentParser(prog="mcp_toolgen", description="Generate AI tool specs from GraphQL or proto.")
-    src_grp = ap.add_mutually_exclusive_group(required=True)
-    src_grp.add_argument("source", nargs="?", help="Path to introspection JSON or .desc file")
-    src_grp.add_argument("--url", help="GraphQL endpoint URL – introspection fetched automatically")
-    ap.add_argument("--header", action="append", default=[], help="HTTP header for --url (e.g. 'Authorization: Bearer X')")
+    ap = argparse.ArgumentParser("mcp_toolgen", description="Generate AI tool schemas from GraphQL or gRPC.")
+    src = ap.add_mutually_exclusive_group(required=True)
+    src.add_argument("source", nargs="?", help="Path to introspection JSON or .desc file")
+    src.add_argument("--url", help="GraphQL endpoint URL (introspection fetched automatically)")
+    ap.add_argument("--header", action="append", default=[], help="Extra HTTP header (repeatable)")
+    ap.add_argument("--cookie", help="Session cookie string – adds 'Cookie:' header")
+    ap.add_argument("--only-mutations", action="store_true", help="GraphQL: include only mutations")
     ap.add_argument("--format", choices=["openai", "claude"], default="openai")
-    ap.add_argument("--only-mutations", action="store_true", help="GraphQL: include only Mutation fields")
-    ap.add_argument("--services", help="Proto: comma-separated service names to include")
+    ap.add_argument("--services", help="Proto: comma‑separated list of service names to include")
     ns = ap.parse_args(argv)
 
+    headers = _parse_headers(ns.header)
+    if ns.cookie:
+        headers["Cookie"] = ns.cookie
+
     if ns.url:
-        tools = generate_tools_from_graphql(ns.url, headers=_parse_headers(ns.header), only_mutations=ns.only_mutations, fmt=ns.format)
+        tools = generate_tools_from_graphql(ns.url, headers=headers, only_mutations=ns.only_mutations, fmt=ns.format)
     else:
         if not ns.source:
-            ap.error("Provide a source file or --url")
+            ap.error("Provide SOURCE or --url")
         path = pathlib.Path(ns.source)
         if path.suffix == ".desc":
             svcs = ns.services.split(",") if ns.services else None

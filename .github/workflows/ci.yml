@@ -2,8 +2,8 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
-    tags:     [ 'v*' ]
+    branches: [main]
+    tags:     ['v*']
 
 jobs:
   test:
@@ -13,9 +13,14 @@ jobs:
         py: ['3.9', '3.10', '3.11']
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
-        with: { python-version: ${{ matrix.py }} }
-      - run: pip install hatch pytest requests graphql-core protobuf
+        with:
+          python-version: ${{ matrix.py }}
+
+      - run: pip install --upgrade hatch
+      - run: hatch build
+      - run: pip install dist/*.whl
       - run: pytest
 
   publish:
@@ -24,9 +29,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
-        with: { python-version: '3.11' }
+        with:
+          python-version: '3.11'
+
       - run: pip install hatch twine
       - run: hatch build
-      - run: twine upload --repository url=https://test.pypi.org/legacy/ dist/* -u __token__ -p ${{ secrets.TEST_PYPI_TOKEN }}
-      - run: twine upload dist/* -u __token__ -p ${{ secrets.PYPI_TOKEN }}
+      - run: twine upload \
+          --repository-url https://test.pypi.org/legacy/ \
+          dist/* -u __token__ -p ${{ secrets.TEST_PYPI_TOKEN }}
+      - run: twine upload \
+          dist/* -u __token__ -p ${{ secrets.PYPI_TOKEN }}
