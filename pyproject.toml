@@ -4,12 +4,12 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mcp-toolgen"
-version = "0.1.1"                     # bump with SemVer
 description = "Generate OpenAI / Claude tool specs from GraphQL or gRPC."
 authors = [{ name = "Noamski", email = "" }]
 license = { file = "LICENSE" }
 readme = "README.md"
 requires-python = ">=3.8"
+dynamic = ["version"]
 
 dependencies = [
   "requests>=2.31",
@@ -26,3 +26,6 @@ mcp_toolgen = "mcp_toolgen.mcp_toolgen:_cli"
 
 [tool.hatch.build.targets.sdist]
 include = ["/mcp_toolgen", "/README.md", "/LICENSE"]
+
+[tool.hatch.version]
+path = "mcp_toolgen/__init__.py"

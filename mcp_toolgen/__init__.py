@@ -18,4 +18,4 @@ __all__ = [
     "generate_tools_from_proto",
 ]
 
-__version__ = _pkg_version(__name__)
+__version__ = "0.1.3"
